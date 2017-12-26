@@ -1,0 +1,415 @@
+#!/bin/bash
+#
+# Copyright (c) 2018 [n/a] info@embeddora.com All rights reserved
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#        * Redistributions of source code must retain the above copyright
+#          notice, this list of conditions and the following disclaimer.
+#        * Redistributions in binary form must reproduce the above copyright
+#          notice, this list of conditions and the following disclaimer in the
+#          documentation and/or other materials provided with the distribution.
+#        * Neither the name of The Linux Foundation nor
+#          the names of its contributors may be used to endorse or promote
+#          products derived from this software without specific prior written
+#          permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NON-INFRINGEMENT ARE DISCLAIMED.    IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+# WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+# OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+# ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# Abstract: multi-proto multi-platform time measurements
+#
+
+
+# Marker of valid HTTP-responce
+HTTP_PACKET_MARKER="http-eq"
+
+# Name of Wi-Fi inetrface DUC/CPE side
+ESSID_MARKER="###WIFIPASSWORD_24"
+
+# Name of WiFi interface on local machnie 
+INT="wlan0"
+
+# Name of ethernet interface on local machnie 
+INT_WIRE="eth0"
+
+# Address of <br-lan> (in general case, in particular cases - different)
+TARGET_IPV4="192.168.0.1"
+
+# Address of machine the routine is started on
+LOCAL_IPV4="192.168.0.101"
+
+# Addr.-mask for IPv4 network the CPE/DUC and local machnie are operating 
+LOCAL_MSK_IPV4="255.255.0.0"
+
+# General purpose TMO, errcodes {-8, .., 0} are occupied by main routine
+GP_TMO=-101
+
+# Tome needed for <ifconfig XXXX up> to take effect. Should be keps as small is it can be. Figured-out empirically.
+UP_MILLISECONDS=0.6
+
+# Tome needed for <ifconfig XXXX down> to take effect. Should be keps as small is it can be. Figured-out empirically.
+DOWN_MILLISECONDS=0.1
+
+# Time increment for HTTP converations
+WEBSERVER_LATENCY=3
+
+# Time increment for ICMP converations
+WIREDLINK_LATENCY=1
+
+# Latency of WiFi responce
+AIRLINK_LATENCY=3
+
+# An answer of AUX. webserver on non-existing page(s). ( Synchronize with <[CPE]/etc/init.d/self-terminator> )
+HTTP_NOTFOUND_MARKER="Not Found"
+
+# AUX webserver address is an address of <br-lan>. ( Synchronize with <[CPE]/etc/init.d/self-terminator> )
+AUX_SRV_ADDR="192.168.0.1"
+
+# Can be anything except "80" (which is already occupied). ( Synchronize with <[CPE]/etc/init.d/self-terminator> )
+AUX_SRV_PORT="88"
+
+# Part of HTTP-request causing immediate reboot of DUT/CPE. ( Synchronize with <[CPE]/etc/init.d/self-terminator> )
+BADWORD="suicide"
+
+# One and half minute should be sufficient for bring-up of any interface [wl0.1, eth0] on any platform [TouchP5-REGION, TouchP5-PROCD]
+TMO=190
+
+# Time allowed to elapse between end of PING and first answer of AUX webserver (a.k.a. aux handchake answer)
+AUX_HANDSHAKE_TMO=30
+
+# Time allowed to wait for responce on death packet (handshake was received, so webserver is running)
+AUX_DPACK_TMO=15
+
+# Time increment for HTTP converations with AUX webserver
+AUX_HANDSHAKE_LATENCY=2
+
+# Time increment for HTTP converations with AUX webserver
+AUX_DPACK_LATENCY=5
+
+# Global constant to define how many times to repeat the BOOTUP-SHUTDOWN test. Non zero, will be used as divider in the end of job.
+REPETITIONS=5
+
+
+# Constant for arithm. operations
+INCREMENT=1
+
+# Constant for arithm. operations
+DECREMENT=1
+
+process_timeout()
+{
+	if [[ "$TIME" -gt $1 ]]; then
+		
+		echo $2
+
+		exit $GP_TMO
+	fi
+
+	let "TIME += INCREMENT"
+
+} # process_timeout()
+
+
+process_aux_timeout()
+{
+	if [[ "$TIME" -gt $1 ]]; then
+		
+		echo $2
+
+		OUTPUT="NON_EMPTY"
+	fi
+
+	let "TIME += INCREMENT"
+
+} # process_timeout()
+
+# Configure interface and send HTTP-request, parse it on receival 
+poll_webserver()
+{
+	echo "SENDING HTTP-REQUEST TO $ESSID_MARKER"
+
+	# Run dhclient
+	dhclient $INT -v
+
+	# Autoconfigure the interface 
+	ifconfig  $INT
+	
+	INCREMENT=$WEBSERVER_LATENCY
+
+	OUTPUT=`eval curl http://$TARGET_IPV4 | grep "$HTTP_PACKET_MARKER"` ; TIME=0
+
+	while [ -z "$OUTPUT" ]
+	do
+		# TODO: correct this TMO
+		process_timeout $TMO "Exiting on 'poll_webserver' timeout"
+
+		OUTPUT=`eval curl http://$TARGET_IPV4 | grep "$HTTP_PACKET_MARKER"`
+
+		[ -z "$OUTPUT" ] && sleep $WEBSERVER_LATENCY
+
+	done	
+	
+	echo "RECEIVED HTTP-RESPONCE FROM $ESSID_MARKER"
+
+} # poll_webserver()
+
+# Same as <poll_webserver> but without interface autoconfiguration
+kick_webserver()
+{
+	echo "SENDING HTTP-REQUEST TO $TARGET_IPV4"
+
+	OUTPUT=`eval curl http://$TARGET_IPV4 | grep "$HTTP_PACKET_MARKER"` ; TIME=0
+
+	INCREMENT=$WEBSERVER_LATENCY
+
+	while [ -z "$OUTPUT" ]
+	do
+		# TODO: correct this TMO
+		process_timeout $TMO "Exiting on 'kick_webserver' timeout"
+
+		OUTPUT=`eval curl http://$TARGET_IPV4 | grep "$HTTP_PACKET_MARKER"`
+
+		[ -z "$OUTPUT" ] && sleep $WEBSERVER_LATENCY
+
+	done	
+	
+	echo "RECEIVED HTTP-RESPONCE FROM $TARGET_IPV4"
+
+
+	# <TouchP5-PROCD>:  kill $(ps | grep 'uhttpd' | awk '{print $1}')  
+
+} # kick_webserver()
+
+# Same as <kick_webserver> but traffic is addressed to AUX webserver
+ensure_aux_started()
+{
+	echo "SENDING HANDSHAKE HTTP-REQUEST TO $AUX_SRV_ADDR"
+
+	OUTPUT=`eval curl --max-time $AUX_HANDSHAKE_LATENCY http://$AUX_SRV_ADDR:$AUX_SRV_PORT | grep "$HTTP_PACKET_MARKER"` ; TIME=0
+
+	INCREMENT=$AUX_HANDSHAKE_LATENCY
+
+	while [ -z "$OUTPUT" ]
+	do
+		# Handshake is 'must-have' so we exit the program on TMO once the responce has not arrived
+		process_timeout $AUX_HANDSHAKE_TMO "Exiting on 'ensure_aux_started' timeout"
+
+		OUTPUT=`eval curl --max-time $AUX_HANDSHAKE_LATENCY http://$AUX_SRV_ADDR:$AUX_SRV_PORT | grep "$HTTP_PACKET_MARKER"`
+
+		# Whatever is the responce we don't sleep $AUX_HANDSHAKE_LATENCY, since we've already spent $AUX_HANDSHAKE_LATENCY in <curl>
+
+	done	
+	
+	echo "RECEIVED HTTP-RESPONCE FROM $TARGET_IPV4"
+
+} # ensure_aux_started()
+
+# Keep on sending 'death' packets to AUX. web-server until it responds with 'Not Found', or until AUX_DPACK_TMO expires
+send_death_packet()
+{
+	echo "SENDING 'DEATH' PACKET TO AUX-WEBSERVER OF $TARGET_IPV4"
+
+	OUTPUT=`eval curl --max-time $AUX_DPACK_LATENCY http://$AUX_SRV_ADDR:$AUX_SRV_PORT/$BADWORD | grep "$HTTP_NOTFOUND_MARKER"`
+
+	INCREMENT=$((2*AUX_DPACK_LATENCY))
+
+	# The HTTP-request may remain not answered, so we break the loop on AUX_DPACK_TMO without exiting the program
+	while [ -z "$OUTPUT" ]
+	do
+		OUTPUT=`eval curl --max-time $AUX_DPACK_LATENCY http://$AUX_SRV_ADDR:$AUX_SRV_PORT/$BADWORD | grep "$HTTP_NOTFOUND_MARKER"`
+
+		# Whatever is the responce we sleep $AUX_DPACK_LATENCY. (Otherwise we need to have been deployed <ensure_aux_started> and thus to make things even more complicated.)
+
+		sleep $AUX_DPACK_LATENCY
+
+		# This may fulfill the <OUTPUT> to break the cycle
+		[ -z "$OUTPUT" ] && process_aux_timeout $AUX_DPACK_TMO "Exiting on 'send_death_packet' timeout"
+	done	
+	
+	#echo "RECEIVED SUCH HTTP-RESPONCE FROM $TARGET_IPV4 : $OUTPUT"
+
+} # send_death_packet()
+
+wait_link()
+{
+	# TODO: uncomment: OUTPUT=`eval iw wlan0 scan | grep "$ESSID_MARKER"`
+
+	INCREMENT=$WIREDLINK_LATENCY
+
+	# Put into known state
+	OUTPUT=""; TIME=0
+	
+	while [ -z "$OUTPUT" ]
+	do
+		# sleep $WIREDLINK_LATENCY # WIREDLINK_LATENCY is increment
+
+		process_timeout $TMO "Exiting on 'wait_link' timeout"
+
+		OUTPUT=`eval iw wlan0 scan | grep "$ESSID_MARKER"`
+
+		[ -z "$OUTPUT" ] && sleep $WIREDLINK_LATENCY # WIREDLINK_LATENCY is increment
+
+	done	
+	
+	echo "$ESSID_MARKER ON AIR"
+
+} # wait_link()
+
+check_link()
+{
+	OUTPUT=`eval ping $TARGET_IPV4 -c 1 | grep "bytes from $TARGET_IPV4"` ; TIME=0
+
+	while [ -z "$OUTPUT" ]
+	do
+		process_timeout $TMO "Exiting on 'check_link' timeout"
+
+		# Dot - to STDOUT to see the job cycling
+		eth_up > /dev/null 2>&1 && echo "."
+
+		# TODO: This TMO is real headache. Do something about it!
+		sleep 0.3
+
+		OUTPUT=`eval ping $TARGET_IPV4 -c 1 | grep "bytes from $TARGET_IPV4"`
+
+	done		
+
+	echo "ICMP EHCO RESPONCE RECEIVED FROM $TARGET_IPV4"
+
+} # check_link()
+
+
+# Same as  <check_link> but establishes a dedicated net interface prioor to pinging
+check_air()
+{
+	echo "SENDING ICMP-REQUEST TO $ESSID_MARKER"
+
+	# Running dhclient
+	dhclient $INT -v
+
+	# Autoconfigure the interface
+	ifconfig $INT
+
+	OUTPUT=`eval ping $TARGET_IPV4 -c 1 | grep "bytes from $TARGET_IPV4"` ; TIME=0
+
+	while [ -z "$OUTPUT" ]
+	do
+		process_timeout $TMO "Exiting on 'check_air' timeout"
+
+		OUTPUT=`eval ping $TARGET_IPV4 -c 1 | grep "bytes from $TARGET_IPV4"`
+	done		
+
+	echo "ICMP EHCO RESPONCE RECEIVED FROM $TARGET_IPV4"
+
+} # check_air()
+
+
+# Shut the interface down and ensure it has entered expected state 
+eth_down()
+{
+
+	ifconfig $INT_WIRE down
+	OUTPUT_IF_DOWN=`eval ifconfig -s | grep 'eth0'`
+
+	while [ ! -z "$OUTPUT_IF_DOWN" ]
+	do
+		ifconfig $INT_WIRE down
+		sleep $DOWN_MILLISECONDS # TODO: inspect
+		OUTPUT_IF_DOWN=`eval ifconfig -s| grep 'eth0'`
+	done
+
+	echo "Now the $INT_WIRE is DOWN"
+
+} # eth_down()
+
+# Bring the interface up and ensure it has entered expected state 
+eth_up()
+{	
+	ifconfig $INT_WIRE $LOCAL_IPV4 netmask $LOCAL_MSK_IPV4 up
+
+	# TODO: inspect
+	sleep $UP_MILLISECONDS 
+
+	OUTPUT_IF_UP=`eval ifconfig eth0 | grep "inet addr:$TARGET_IPV4"`
+
+	while [ -z "$OUTPUT_IF_UP" ]
+	do
+		ifconfig $INT_WIRE $LOCAL_IPV4 netmask $LOCAL_MSK_IPV4 up
+		OUTPUT_IF_UP=`eval ifconfig eth0 | grep "inet addr:$TARGET_IPV4"`
+	done
+
+	echo "Now the $INT_WIRE is UP"
+
+} # eth_up()
+
+
+connect_wire()
+{
+	# Hush down internal X's network bring-up procedure; it's blocking if 8p8c is not plugged - run in detached shell
+	dhclient $INT_WIRE -n > /dev/null 2>&1 &  
+
+	eth_down
+
+	eth_up
+
+} # connect_wire()
+
+connect_radio()
+{
+	dhclient $INT -r
+	ifconfig $INT down
+
+	iwconfig $INT mode managed essid "$ESSID"
+	ifconfig $INT up
+
+	# Put into known state
+	OUTPUT="" ; TIME=0
+
+	while [ -z "$OUTPUT" ]
+	do
+		ifconfig $INT down
+
+		sleep $AIRLINK_LATENCY
+
+		if [ "$TIME" -gt "$TMO" ]; then
+			
+			echo "Exiting on C-timeout"
+
+			exit GP_TMO
+		fi
+
+		kill $(ps aux | grep -E 'wpa_supplicant' | awk '{print $2}') > /dev/null 2>&1
+
+		ifconfig $INT up
+		
+		iw wlan0 scan >>./_$ESSID_MARKER.LOG
+
+		# Enter WiFi password 
+		echo -e "12345678\n12345678" | wpa_passphrase $ESSID_MARKER > $CONFNAME
+
+		#wpa_supplicant -B -D wext -i wlan0 -c $CONFNAME 2>/dev/null
+		wpa_supplicant -B -D wext -i wlan0 -c $CONFNAME > /dev/null 2>&1
+
+		# To pacify user (otherwise he will start clicking Ctrl-C and/or say a prayers)
+		echo "Scanning radio air..."
+
+		TIME=$((TIME+AIRLINK_LATENCY))
+
+		# Let the air connection to stabilize. TODO: check if it's right interval?
+		sleep $AIRLINK_LATENCY
+
+		OUTPUT=`eval iw wlan0 link | grep "$ESSID_MARKER"`
+	done	
+	
+	echo "ESTABLISHED RADIO LINK TO $ESSID_MARKER"
+
+} # connect_radio()
